@@ -1,0 +1,31 @@
+name: 人工反射の合図
+on:
+  schedule:
+    - cron: "30 20 * * *"   # 毎朝 5:30(日本時間)に、その日の合図を予約する
+  workflow_dispatch:        # 反射を足した日は、手でも動かせる(まだ予約していない反射の分だけ足す)
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 今日の合図を予約する
+        run: node scripts/schedule.mjs
+        env:
+          DATA_REPO: ${{ vars.DATA_REPO }}
+          DATA_BRANCH: ${{ vars.DATA_BRANCH }}
+          APP_URL: ${{ vars.APP_URL }}
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      - name: 止められないための印(週に1回)
+        # 公開リポジトリの定期実行は、60日間なにも更新がないと止められるので、週に1回だけ印を残す
+        run: |
+          if [ "$(date -u +%u)" = "1" ]; then
+            date -u > .github/last-run.txt
+            git config user.name "jinko-bot"; git config user.email "jinko-bot@users.noreply.github.com"
+            git add .github/last-run.txt && git commit -m "合図の予約が動いている印" && git push || true
+          fi
