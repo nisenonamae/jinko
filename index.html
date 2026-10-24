@@ -119,11 +119,11 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j9";
+const APP_VERSION = "2026-10-24 j10";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
-const CUES = date => "roadmap/apps/jinko/cues/" + date + ".json", SCENEWORDS = "roadmap/apps/jinko/scene-words.txt", JST = 9 * 3600e3, jstDate = ms => new Date(ms + JST).toISOString().slice(0, 10);
+const CUES = date => "roadmap/apps/jinko/cues/" + date + ".json", JST = 9 * 3600e3, jstDate = ms => new Date(ms + JST).toISOString().slice(0, 10);
 // 出す場面(MacroDroid が検知できるものだけ)。印は合図の文の末尾に付く
 const SCENES = [
   { id: "home", tag: "《家》", label: "家にいるとき", how: "Wi-Fi が家のSSID、または 場所が自宅" },
@@ -229,10 +229,6 @@ async function sync(){
     const now = Date.now(); state.cues = [];
     for (const day of [jstDate(now - 864e5), jstDate(now)]) { try { const cf = await readFile(CUES(day)); if (cf.text) state.cues = state.cues.concat(JSON.parse(cf.text).cues || []); } catch (x) {} }
     state.cues.sort((a, b) => a.at - b.at);
-    // 場面つきの反射を、MacroDroid が読める形で書き出す(1行 = 「印<TAB>合図の文」)
-    const sceneLines = state.data.reflexes.filter(x => !x.archived && (x.scenes || []).length).flatMap(x => { const w = x.kind === "再現" ? x.b.what : x.c.what;
-      return (x.scenes || []).map(sid => { const sc = sceneOf(sid); return sc && w ? sc.tag + "\t" + w : null; }).filter(Boolean); }).join("\n");
-    try { const sf = await readFile(SCENEWORDS); if ((sf.text || "").trim() !== sceneLines.trim()) await writeFile(SCENEWORDS, sceneLines, sf.sha, "人工反射:場面つきの反射"); } catch (x) {}
     if (changed || !f.sha) await save();
     lsSet(KEY_LOCAL, state.data);
     if (msg) { msg.textContent = "読み込みました" + (added ? "(新しい記録 " + added + "件)" : ""); msg.className = "note"; }
@@ -311,7 +307,7 @@ function detailHtml(rx){
       ((rx.scenes || []).length ? "<span>出す場面</span><div>" + rx.scenes.map(id => (sceneOf(id) || {}).label).filter(Boolean).map(esc).join("・") + "</div>" : "") +
       "<span>1日の合図</span><div>" + esc(rx.perDay) + "回くらい</div><span>来ない時間</span><div>" + esc(rx.quiet || "なし") + "(マナーモードのあいだも来ない)</div>" +
       "<span>本番</span><div>" + s.real + "回" + (s.realHit != null ? "・当たり " + Math.round(s.realHit * 100) + "%" : "") + "</div></div>" +
-      '<div class="row"><button type="button" class="btn sm" data-dojo-go="' + esc(rx.id) + '">道場で稽古する</button><button type="button" class="btn ghost sm" data-cue-go="' + esc(rx.id) + '">合図局の組み方</button><button type="button" class="btn ghost sm" data-edit="' + esc(rx.id) + '">直す</button><button type="button" class="linkbtn" data-archive="' + esc(rx.id) + '">しまう</button></div></div>';
+      '<div class="row"><button type="button" class="btn sm" data-dojo-go="' + esc(rx.id) + '">道場で稽古する</button><button type="button" class="btn ghost sm" data-cue-go="' + esc(rx.id) + '">合図局</button><button type="button" class="btn ghost sm" data-edit="' + esc(rx.id) + '">直す</button><button type="button" class="linkbtn" data-archive="' + esc(rx.id) + '">しまう</button></div></div>';
 }
 function formHtml(f){
   const v = k => esc(f[k] == null ? "" : f[k]);
@@ -450,55 +446,15 @@ function cueStatusHtml(){
     '<p class="note">これから来る合図の時刻は、ここにも出しません(分かってしまうと、反射の稽古にならないので)。</p></div>';
 }
 function setupHtml(){
-  const c = state.conn || { owner: "(ユーザー名)", repo: "notion-daily", branch: "main" }, topic = state.data.ntfy || "(設定のタブで作る)", app = location.origin + location.pathname;
-  return "<h2>合図の仕組みの組み方(最初に1回)</h2><div class=\"box\"><h2 style=\"margin-top:0\">1. 予約(GitHub)</h2><ol class=\"steps\">" +
-    "<li>GitHubの <code>jinko</code> リポジトリに、<code>index.html</code>・<code>scripts/schedule.mjs</code>・<code>.github/workflows/cues.yml</code> の3つを置く。</li>" +
-    "<li><code>jinko</code> の Settings → Secrets and variables → Actions で、<b>Secrets</b> に <code>DATA_TOKEN</code>(" + esc(c.repo) + " を読み書きできるトークン)と <code>NTFY_TOPIC</code>(<code>" + esc(topic) + "</code>)、<b>Variables</b> に <code>DATA_REPO</code>(<code>" + esc(c.owner + "/" + c.repo) + "</code>)と <code>APP_URL</code>(<code>" + esc(app) + "</code>)を入れる。</li>" +
-    "<li>Actions → 「人工反射の合図」→ Run workflow で1回動かす。以後は毎朝5:30に、その日の合図と発動が予約される。</li></ol>" +
-    "<h2>2. 受け取り(ntfy)</h2><ol class=\"steps\"><li>ntfy のアプリで、サーバー <code>ntfy.sh</code>、トピック <code>" + esc(topic) + "</code> を購読する。</li>" +
-    "<li>このトピックの通知の音を、人工反射だけの短い音にする。<b>振動は切る</b>(マナーモードのあいだは何も起きない)。「不快信号」の知らせは音の出ない優先度で届く(MacroDroid だけが見る)。</li></ol>" +
-    "<h2>3. 不快信号(MacroDroid・マクロ3つ)</h2>" +
-    "<p class=\"note\">変数を2つ作る:<code>kaijo</code>(整数)と <code>dankai</code>(整数)。</p>" +
-    "<p><b>マクロ①「人工反射:合図」</b></p><ol class=\"steps\"><li><b>きっかけ</b>:通知を受信 — アプリ ntfy、本文に <code>合図(人工反射)</code> を含む。</li><li><b>動作</b>:変数 <code>kaijo</code> を 0 にする。</li></ol>" +
-    "<p><b>マクロ②「人工反射:不快信号」</b></p><ol class=\"steps\"><li><b>きっかけ</b>:通知を受信 — アプリ ntfy、本文に <code>不快信号(人工反射)</code> を含む。</li>" +
-      "<li><b>条件</b>:着信音のモードが「通常」(マナーモード・サイレントでは発動しない)。</li>" +
-      "<li><b>動作</b>:もし <code>kaijo</code> が 1 なら、ntfy の通知を消して終わる。</li>" +
-      "<li>変数 <code>dankai</code> を 1 にする。</li>" +
-      "<li><b>繰り返す</b>(<code>kaijo</code> が 0 のあいだ、最大20回):<br>・音量を設定(アラーム)— <code>dankai</code> が上がるほど大きく(はじめは50%から、上限は80%までにする)<br>・音を鳴らす(アラームの通り道で、不快な音。段階が上がったら、もっと不快な音に変える)<br>・読み上げ:通知の本文(マジックテキストの通知の文)<br>・振動(長い型)<br>・<code>dankai</code> が3以上なら、画面を最大の明るさにして、ウェブサイト <code>" + esc(app) + "?src=esc</code> を開く<br>・10秒待つ<br>・<code>dankai</code> に1足す</li>" +
-      "<li>繰り返しが終わったら、音量(アラーム)を元に戻す。</li></ol>" +
-    "<p><b>マクロ③「人工反射:解除」</b></p><ol class=\"steps\"><li><b>きっかけ</b>:Webhook(URL)— 識別子 <code>jinko</code>。表示されたURLを、人工反射の設定のタブに貼る。</li>" +
-      "<li><b>動作</b>:変数 <code>kaijo</code> を 1 にする。音を止める。読み上げを止める。短く1回振動。音量(アラーム)を元に戻す。</li></ol>" +
-    "<p class=\"note\">耳を守るため、音量の上限は80%くらいまでにしてください。大きな音を耳の近くで長く鳴らすと、聴力を傷めることがあります。</p>" +
-    "<h2>5.(あれば)場面つきの反射を、その場面でないとき消す</h2><div class=\"box\"><p class=\"note\">反射に「出す場面」を選ぶと、合図の文の末尾に印が付き、roadmap/apps/jinko/scene-words.txt に一覧が書き出されます。使う印ごとに、下のマクロを1つ作ってください。どれも『その場面でないときは、その印の合図を消す』という形です。</p>" +
-      SCENES.map(sc => '<p><b>' + esc(sc.tag) + " " + esc(sc.label) + "</b></p><ol class=\"steps\"><li>きっかけ:通知を受信 — アプリ ntfy、本文に <code>" + esc(sc.tag) + "</code> を含む。</li><li>制約(次で<b>ない</b>とき):" + esc(sc.how) + " <b>でない</b>。</li><li>動作:その通知を消す(通知を消去)。</li></ol>").join("") +
-      "<p class=\"note\">制約を『〜でない』にするのがこつです。その場面のときは制約に当てはまらず、合図はふつうに出ます。《線》は、家以外でも使いたい Wi-Fi があるときに、SSID を指定して使います。</p></div>" +
-    "<h2>6. 試す</h2><p>設定のタブの「解除を試す」で、マクロ③が動く(短く振動する)かを確かめてください。</p></div>";
+  const topic = state.data.ntfy || "(設定のタブで作る)", app = location.origin + location.pathname;
+  return '<div class="box"><p>合図の仕組みの組み方(GitHub の値、ntfy、MacroDroid のマクロ)は、チャットで順番に案内します。このタブは、下の数値だけ確かめるのに使ってください。</p>' +
+    '<div class="kv"><span>トピック</span><div class="code">' + esc(topic) + '</div><span>このアプリの住所</span><div class="code">' + esc(app) + '</div><span>記録のリポジトリ</span><div class="code">' + esc((state.conn && (state.conn.owner + "/" + state.conn.repo)) || "(接続すると出ます)") + '</div></div></div>';
 }
-/* ───────── (上級)MacroDroidで、② の本物の場面を拾う ───────── */
+
 function renderCue(){
   const D = state.data, list = D.reflexes.filter(x => !x.archived), box = $("cue");
   if (!list.length) { box.innerHTML = '<div class="box"><p class="note">先に「反射」で反射を作ってください。</p></div>'; return; }
-  const rx = list.find(x => x.id === state.cueFor) || list[0], c = state.conn || { owner: "(ユーザー名)", repo: "(リポジトリ)", branch: "main" };
-  const issue = D.issue ? D.issue : "(設定のタブで記録の受け口を作ると、番号が入ります)";
-  const postUrl = "https://api.github.com/repos/" + c.owner + "/" + c.repo + "/issues/" + issue + "/comments";
-  const lineUrl = "https://api.github.com/repos/" + c.owner + "/" + c.repo + "/contents/" + LINE(rx.id) + "?ref=" + (c.branch || "main");
-  const body = rx.kind === "再現" ? "人工反射 " + rx.id + " 稽古 b=[Bまでの秒] c=[Cまでの秒]" : "人工反射 " + rx.id + " 稽古 c=[動くまでの秒]";
-  const judge = rx.c.judge === "アプリを開く" ? "「アプリを起動」のきっかけ(" + esc(rx.c.app || "開くアプリ") + ")" : rx.c.judge === "NFCタグにかざす" ? "「NFCタグ」のきっかけ" : "画面に出した確認ボタンを押す";
-  box.innerHTML = "<h2>合図局</h2>" + cueStatusHtml() + setupHtml() + '<details class="box"><summary><b>(上級)MacroDroidで、② の本物の場面(ロックを外した、など)を拾う</b></summary><div class="f"><div class="seg" data-seg="cue">' + list.map(x => '<button type="button" data-v="' + esc(x.id) + '" aria-pressed="' + (x.id === rx.id) + '">' + esc(x.name) + "</button>").join("") + "</div></div>" +
-    '<div class="box"><p class="note">MacroDroidで、この反射のための決まり(マクロ)を作ります。画面の言葉はMacroDroidの版によって少し違うことがあります。</p>' +
-    "<h2>合図のマクロ</h2><ol class=\"steps\">" +
-      "<li><b>きっかけ</b>:「一定の間隔」で10分ごと。</li>" +
-      "<li><b>条件</b>:「着信音のモード」が<b>通常</b>のときだけ(マナーモード・サイレントでは動かない)。" + (rx.quiet ? "さらに「時間帯」で <code>" + esc(rx.quiet) + "</code> を<b>除く</b>。" : "") + "</li>" +
-      "<li><b>いつ来るか分からなくする</b>:整数の変数 <code>くじ</code> に 1〜" + Math.max(1, Math.round(6 * 16 / Math.max(1, +rx.perDay || 10))) + " の乱数を入れ、<code>くじ</code> が 1 でなければ止める(1日だいたい " + esc(rx.perDay) + " 回になる)。</li>" +
-      "<li><b>当たりの線を読む</b>:「HTTPリクエスト」GET <code>" + esc(lineUrl) + "</code>、ヘッダー <code>Authorization: Bearer (トークン)</code> と <code>Accept: application/vnd.github.raw</code>。返ってきた数字を変数 <code>線</code> に入れる。</li>" +
-      "<li><b>合図</b>:人工反射だけの音(ほかで使わない音)を鳴らし、振動。ストップウォッチ <code>反射</code> を0から始める。</li>" +
-      (rx.kind === "再現" ? "<li><b>Bを待つ</b>:「きっかけを待つ」で、" + esc(rx.b.mark || "Bのしるし") + "(最長3分)。待っているあいだ、10秒ごとに合図の音を鳴らし直す(Bが起きるまで止まらない)。時間切れなら「外れ」の音を鳴らし、コメントを <code>人工反射 " + rx.id + " 稽古 b=外れ</code> にして9へ。</li><li><b>Bまでの秒</b>:ストップウォッチの値を変数 <code>B秒</code> に入れ、ストップウォッチを0からやり直す。</li>" : "") +
-      "<li><b>動きを待つ</b>:「きっかけを待つ」で、" + judge + "(最長 <code>線</code> の2倍の秒数)。</li>" +
-      "<li><b>その場の結果</b>:ストップウォッチの値を変数 <code>C秒</code> に入れる。<code>C秒</code> が <code>線</code> 以下なら短く明るい音(当たり)、超えたか時間切れなら低い「ブッ」と長めの振動(外れ)。</li>" +
-      "<li><b>記録を送る</b>:「HTTPリクエスト」POST <code>" + esc(postUrl) + "</code>、ヘッダー <code>Authorization: Bearer (トークン)</code>、本文 <code>{\"body\":\"" + esc(body) + "\"}</code>(時間切れは <code>c=外れ</code>)。</li>" +
-    "</ol>" +
-    (rx.kind === "再現" ? "<h2>本番のマクロ</h2><ol class=\"steps\"><li><b>きっかけ</b>:" + esc(rx.b.mark || "Bのしるし") + "(自分で本物のBを起こしたとき)。</li><li>ストップウォッチを0から始め、上の6〜8と同じように動きを待って測る。</li><li>本文は <code>人工反射 " + rx.id + " 本番 c=[秒]</code>。</li></ol><p class=\"note\">合図があってもなくても、Bのあとは必ずCをする。これがないと、合図のあとにだけCが出る反射になってしまいます。</p>" : "") +
-    "<h2>トークン</h2><p class=\"note\">MacroDroidには、記録のリポジトリだけに使える細かいトークン(Contents と Issues の読み書き)を作って入れると安全です。</p></div></details>";
+  box.innerHTML = "<h2>合図局</h2>" + cueStatusHtml() + setupHtml();
 }
 
 function render(){
@@ -574,7 +530,7 @@ document.addEventListener("click", async e => {
     (state.conn ? sync() : Promise.resolve()).then(() => { state.ready = true; renderRun(); }); }
   else { state.ready = true; render(); if (state.conn) sync(); else showView("set"); }
   if ("serviceWorker" in navigator && !window.__jinkoTest && location.protocol === "https:") navigator.serviceWorker.register("./sw.js").catch(() => {});
-  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf, SCENES, SCENEWORDS };
+  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf, SCENES };
 })();
 </script>
 
