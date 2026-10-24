@@ -119,11 +119,11 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j7";
+const APP_VERSION = "2026-10-24 j8";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
-const CUES = date => "roadmap/apps/jinko/cues/" + date + ".json", JST = 9 * 3600e3, jstDate = ms => new Date(ms + JST).toISOString().slice(0, 10);
+const CUES = date => "roadmap/apps/jinko/cues/" + date + ".json", HOMEWORDS = "roadmap/apps/jinko/home-words.txt", JST = 9 * 3600e3, jstDate = ms => new Date(ms + JST).toISOString().slice(0, 10);
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
@@ -217,6 +217,9 @@ async function sync(){
     const now = Date.now(); state.cues = [];
     for (const day of [jstDate(now - 864e5), jstDate(now)]) { try { const cf = await readFile(CUES(day)); if (cf.text) state.cues = state.cues.concat(JSON.parse(cf.text).cues || []); } catch (x) {} }
     state.cues.sort((a, b) => a.at - b.at);
+    // 家でしかできない反射の「合図の文」を、MacroDroid が読める形で書き出す(1行に1つ)
+    const homeWords = state.data.reflexes.filter(x => !x.archived && x.homeOnly).map(x => (x.kind === "再現" ? x.b.what : x.c.what)).filter(Boolean).join("\n");
+    try { const hf = await readFile(HOMEWORDS); if ((hf.text || "").trim() !== homeWords.trim()) await writeFile(HOMEWORDS, homeWords, hf.sha, "人工反射:家でしかできない反射"); } catch (x) {}
     if (changed || !f.sha) await save();
     lsSet(KEY_LOCAL, state.data);
     if (msg) { msg.textContent = "読み込みました" + (added ? "(新しい記録 " + added + "件)" : ""); msg.className = "note"; }
@@ -314,6 +317,7 @@ function formHtml(f){
     '<div class="f"><label>不快信号までの時間(秒):合図からこの時間までに解除できなければ、不快信号が来る</label><input id="f-limit" type="number" step="0.5" min="1" value="' + v("limit0") + '"></div>' +
     '<div class="f"><label><input type="checkbox" id="f-rand" style="width:auto"' + (f.randomFire === false ? "" : " checked") + '> 不快信号が来る瞬間を、最短時間〜上の時間のあいだで毎回ランダムにする(いつ来るか分からない)</label></div>' +
     '<div class="f"><label><input type="checkbox" id="f-auto" style="width:auto"' + (f.autoShrink ? " checked" : "") + '> 不快信号までの時間を、記録に合わせて自動で縮める</label></div>' +
+    '<div class="f"><label><input type="checkbox" id="f-home" style="width:auto"' + (f.homeOnly ? " checked" : "") + '> 家でしかできない(外出中は、この合図を出さない)</label></div>' +
     '<div class="f"><label>1日の合図の回数(だいたい)</label><input id="f-per" type="number" min="1" max="60" value="' + v("perDay") + '"></div>' +
     '<div class="f"><label>合図が来ない時間(例:00:00-07:00, 13:00-15:30)</label><input id="f-quiet" value="' + v("quiet") + '"></div>' +
     '<p class="note">マナーモード(振動・サイレント)のあいだは、合図は来ません。</p>' +
@@ -321,7 +325,7 @@ function formHtml(f){
 }
 function readForm(){ const g = id => ($(id) || {}).value; const f = state.form;
   ["name:f-name", "bwhat:f-bwhat", "bmark:f-bmark", "a:f-a", "cwhat:f-cwhat", "app:f-app", "open:f-open", "limit0:f-limit", "perDay:f-per", "quiet:f-quiet", "minTime:f-min", "decl:f-decl"].forEach(s => { const [k, id] = s.split(":"); const x = g(id); if (x != null) f[k] = x; });
-  if ($("f-rand")) f.randomFire = $("f-rand").checked; if ($("f-auto")) f.autoShrink = $("f-auto").checked; }
+  if ($("f-rand")) f.randomFire = $("f-rand").checked; if ($("f-auto")) f.autoShrink = $("f-auto").checked; if ($("f-home")) f.homeOnly = $("f-home").checked; }
 function renderLog(){
   const D = state.data, ts = D.trials.slice().reverse().slice(0, 120), nm = id => ((D.reflexes.find(x => x.id === id) || {}).name || id);
   $("log").innerHTML = "<h2>記録 <small class=\"note\">新しい順 ・ " + D.trials.length + "回</small></h2>" + (ts.length ? '<div class="box">' + ts.map(t => '<div class="tr"><span>' + md(t.at) + (t.tapAt ? '<small class="note" style="display:block">→ ' + md(t.tapAt).split(" ")[1] + ":" + String(new Date(t.tapAt).getSeconds()).padStart(2, "0") + "</small>" : "") + "</span><span>" + esc(t.mode) + "</span><span>" + esc(nm(t.r)) + (t.b != null ? ' <small class="note">B ' + fmtS(t.b) + "</small>" : "") + '</span><span class="' + (isHit(t) ? "h" : "m") + '">' + (t.c != null && !t.invalid ? fmtS(t.c) : (t.invalid ? "速すぎ(無効)" : t.miss === "B" ? "B外れ" : "時間切れ")) + "</span></div>").join("") + "</div>"
@@ -451,7 +455,11 @@ function setupHtml(){
     "<p><b>マクロ③「人工反射:解除」</b></p><ol class=\"steps\"><li><b>きっかけ</b>:Webhook(URL)— 識別子 <code>jinko</code>。表示されたURLを、人工反射の設定のタブに貼る。</li>" +
       "<li><b>動作</b>:変数 <code>kaijo</code> を 1 にする。音を止める。読み上げを止める。短く1回振動。音量(アラーム)を元に戻す。</li></ol>" +
     "<p class=\"note\">耳を守るため、音量の上限は80%くらいまでにしてください。大きな音を耳の近くで長く鳴らすと、聴力を傷めることがあります。</p>" +
-    "<h2>4. 試す</h2><p>設定のタブの「解除を試す」で、マクロ③が動く(短く振動する)かを確かめてください。</p></div>";
+    "<h2>5.(あれば)外出中は、家でしかできない反射を出さない</h2><div class=\"box\"><p class=\"note\">家でしかできない反射に印を付けると、合図の文の末尾に《家》が付き、roadmap/apps/jinko/home-words.txt に一覧が書き出されます。MacroDroid で、外出中(家の Wi-Fi から離れたとき)にこの印の合図を消すマクロを作れます。</p><ol class=\"steps\">" +
+      "<li><b>マクロ「人工反射:外出中は家の合図を消す」</b>。きっかけ:通知を受信 — アプリ ntfy、本文に <code>《家》</code> を含む。</li>" +
+      "<li>制約:Wi-Fi が家の SSID に<b>つながっていない</b>(または、場所で家から離れている)。</li>" +
+      "<li>動作:その通知を消す(通知を消去)。合図はこれで出ません。外出中は不快信号も来ません。</li></ol><p class=\"note\">家にいるときは制約に当てはまらないので、ふつうに合図が出ます。</p></div>" +
+    "<h2>6. 試す</h2><p>設定のタブの「解除を試す」で、マクロ③が動く(短く振動する)かを確かめてください。</p></div>";
 }
 /* ───────── (上級)MacroDroidで、② の本物の場面を拾う ───────── */
 function renderCue(){
@@ -508,15 +516,15 @@ document.addEventListener("click", async e => {
   if (q("[data-save]")) { readForm(); const f = state.form;
     if (!String(f.name || "").trim() || !String(f.cwhat || "").trim() || (f.kind === "再現" && !String(f.bwhat || "").trim())) { toast("名前と動き(再現ならBも)を書いてください"); return; }
     const lim = Math.max(0.3, +f.limit0 || 5);
-    await save(d => { if (f.id) { const rx = d.reflexes.find(x => x.id === f.id); Object.assign(rx, { name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() }, limit0: lim, perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink }); if (rx.limit > lim || !rx.autoShrink) rx.limit = lim; }
+    await save(d => { if (f.id) { const rx = d.reflexes.find(x => x.id === f.id); Object.assign(rx, { name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() }, limit0: lim, perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink, homeOnly: !!f.homeOnly }); if (rx.limit > lim || !rx.autoShrink) rx.limit = lim; }
       else { const n = d.reflexes.reduce((m, x) => Math.max(m, +String(x.id).replace(/\D/g, "") || 0), 0) + 1;
         d.reflexes.push({ id: "RF" + n, name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() },
-          limit0: lim, limit: lim, limitLog: [{ d: new Date().toISOString(), v: lim }], perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink, created: new Date().toISOString() }); } });
+          limit0: lim, limit: lim, limitLog: [{ d: new Date().toISOString(), v: lim }], perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink, homeOnly: !!f.homeOnly, created: new Date().toISOString() }); } });
     state.form = null; render(); return; }
   if ((b = q("[data-open]"))) { state.open = b.dataset.open; render(); return; }
   if (q("[data-close]")) { state.open = null; render(); return; }
   if ((b = q("[data-edit]"))) { const rx = state.data.reflexes.find(x => x.id === b.dataset.edit);
-    state.form = { id: rx.id, name: rx.name, kind: rx.kind, a: rx.a, bwhat: rx.b.what, bmark: rx.b.mark, cwhat: rx.c.what, judge: rx.c.judge, app: rx.c.app, open: rx.c.open, stop: rx.stop, minTime: rx.minTime, decl: rx.decl, randomFire: rx.randomFire, autoShrink: rx.autoShrink, limit0: rx.limit0, perDay: rx.perDay, quiet: rx.quiet }; state.open = null; render(); return; }
+    state.form = { id: rx.id, name: rx.name, kind: rx.kind, a: rx.a, bwhat: rx.b.what, bmark: rx.b.mark, cwhat: rx.c.what, judge: rx.c.judge, app: rx.c.app, open: rx.c.open, stop: rx.stop, minTime: rx.minTime, decl: rx.decl, randomFire: rx.randomFire, autoShrink: rx.autoShrink, homeOnly: rx.homeOnly, limit0: rx.limit0, perDay: rx.perDay, quiet: rx.quiet }; state.open = null; render(); return; }
   if ((b = q("[data-archive]"))) { if (!confirm("この反射をしまいますか(記録は残ります)。")) return; const id = b.dataset.archive; await save(d => { d.reflexes.find(x => x.id === id).archived = new Date().toISOString(); }); state.open = null; render(); return; }
   if ((b = q("[data-dojo-go]"))) { state.dojo = { r: b.dataset.dojoGo, on: false }; showView("dojo"); return; }
   if ((b = q("[data-cue-go]"))) { state.cueFor = b.dataset.cueGo; showView("cue"); return; }
@@ -544,7 +552,7 @@ document.addEventListener("click", async e => {
 
 (function boot(){
   const P = new URLSearchParams(location.search);
-  if ((P.get("cue") && P.get("at")) || P.get("src") === "esc") { state.run = { id: P.get("cue"), r: P.get("r"), at: +P.get("at") || Date.now(), src: P.get("src") || "", tap: Date.now(), perf: performance.now() }; try { history.replaceState(null, "", location.pathname); } catch (e) {} }
+  if ((P.get("cue") && P.get("at")) || P.get("src") === "esc") { state.run = { id: P.get("cue"), r: P.get("r"), at: +P.get("at") || Date.now(), src: P.get("src") || "", home: P.get("home") === "1", tap: Date.now(), perf: performance.now() }; try { history.replaceState(null, "", location.pathname); } catch (e) {} }
   state.conn = lsGet(KEY, null); state.data = norm(lsGet(KEY_LOCAL, null));
   $("hook").value = hookUrl();
   if (state.conn) { $("c-owner").value = state.conn.owner; $("c-repo").value = state.conn.repo; $("c-branch").value = state.conn.branch; $("c-token").value = state.conn.token; }
@@ -552,7 +560,7 @@ document.addEventListener("click", async e => {
     (state.conn ? sync() : Promise.resolve()).then(() => { state.ready = true; renderRun(); }); }
   else { state.ready = true; render(); if (state.conn) sync(); else showView("set"); }
   if ("serviceWorker" in navigator && !window.__jinkoTest && location.protocol === "https:") navigator.serviceWorker.register("./sw.js").catch(() => {});
-  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf };
+  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf, HOMEWORDS };
 })();
 </script>
 
