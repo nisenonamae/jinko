@@ -119,7 +119,7 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j12";
+const APP_VERSION = "2026-10-24 j13";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
@@ -526,9 +526,12 @@ document.addEventListener("click", async e => {
   if (e.target.id === "ntfy-test" || e.target.id === "ntfy-test-home") { const topic = state.data.ntfy; if (!topic) { toast("先にトピックを保存してください"); return; }
     const home = e.target.id === "ntfy-test-home", msg = $("ntfy-test-msg"), t0 = Date.now();
     if (msg) { msg.textContent = "送信中…"; msg.className = "note"; }
-    try { await fetch("https://ntfy.sh/" + encodeURIComponent(topic), { method: "POST", body: "合図(人工反射):テスト" + (home ? " #home" : ""), headers: { Title: "合図(人工反射)", Priority: "5", Tags: "zap" } });
-      if (msg) msg.textContent = "送りました(" + (Date.now() - t0) + "ミリ秒で受付)。スマホに通知が出るまでの時間が、実際の遅れです" + (home ? "。家にいれば出て、外なら消えます" : "");
-    } catch (x) { if (msg) { msg.textContent = "送れませんでした(ネットを確かめてください)"; msg.className = "note err"; } }
+    // ブラウザのCORSを避けるため、ヘッダーを使わず publish 形式で送る(no-cors)。本文に場面コードを入れる
+    const body = "合図(人工反射):テスト" + (home ? " #home" : "");
+    const url = "https://ntfy.sh/" + encodeURIComponent(topic) + "/publish?message=" + encodeURIComponent(body) + "&title=" + encodeURIComponent("合図(人工反射)") + "&priority=5";
+    try { await fetch(url, { method: "POST", mode: "no-cors" });
+      if (msg) msg.textContent = "送りました。スマホに通知が出るまでの時間が、実際の遅れです" + (home ? "(家にいれば出て、外なら消えます)" : "") + "。出ないときは、ntfy で同じトピックを購読しているか確かめてください";
+    } catch (x) { if (msg) { msg.textContent = "送れませんでした。ネットにつながっているか確かめてください"; msg.className = "note err"; } }
     return; }
   if ((b = q("[data-ua-miss]"))) { const id = b.dataset.uaMiss, c = state.cues.find(x => x.id === id);
     await save(d => { d.trials.push({ cue: id, at: new Date(c.at).toISOString(), r: c.r, mode: "合図", b: null, c: null, miss: "応答なし", limit: (d.reflexes.find(x => x.id === c.r) || {}).limit }); d.trials.sort((x, y) => x.at < y.at ? -1 : 1); }); return; }
