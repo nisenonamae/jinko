@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>人工反射</title>
 <meta name="theme-color" content="#FFF7F4">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
@@ -116,7 +119,7 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j5";
+const APP_VERSION = "2026-10-24 j7";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
@@ -131,7 +134,15 @@ const md = iso => { const d = new Date(iso); return (d.getMonth() + 1) + "/" + d
 function toast(t){ const el = document.createElement("div"); el.className = "toast"; el.textContent = t; document.body.appendChild(el); setTimeout(() => el.remove(), 2600); }
 function blank(){ return { version: 1, issue: null, since: null, seen: [], reflexes: [], trials: [], skipped: [], ntfy: "" }; }
 // 解除の動作:不快信号を止める動き。部品として取り替えられる(今はタップだけ。あとから種類を足す)
-const STOPS = { "タップ": "やり終えたら、通知か画面をタップ" };
+const STOPS = { "声で宣言": "やり終えたら、声に出して宣言する", "タップ": "やり終えたら、通知か画面をタップ" };
+// 宣言の文(反射ごとに決められる。空なら「〇〇、やり終えた」)
+const declOf = rx => String(rx.decl || "").trim() || ((rx.kind === "再現" ? rx.b.what : rx.c.what) + "、やり終えた");
+// 聞き取った文と宣言の文を比べる:空白・句読点を除いて、含まれているか、だいたい同じなら通す
+const normJ = s => String(s || "").replace(/[\s、。,.!?!?「」『』・ー-]/g, "").toLowerCase();
+function similar(a, b){ a = normJ(a); b = normJ(b); if (!a || !b) return 0; if (a.includes(b)) return 1;
+  const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => [i].concat(Array(n).fill(0))); for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return 1 - d[m][n] / Math.max(m, n); }
 // MacroDroid の Webhook(この端末だけの URL)。タップしたら呼んで、不快信号を止める
 const hookUrl = () => (lsGet("jinko-hook", "") || "").trim();
 function callHook(params){ const u = hookUrl(); if (!u) return Promise.resolve(false);
@@ -186,6 +197,7 @@ async function importLog(){
 }
 /* 当たりの線:最近20回の B→C(または合図→動き)の秒数の、速いほうから75%の位置。当たりがだいたい4回に3回になる、ぎりぎりの難しさ */
 function nextLimit(rx){
+  if (!rx.autoShrink) return rx.limit;   // 不快信号までの時間は自分で決める。自動で縮めるのは、選んだ反射だけ
   const ts = state.data.trials.filter(t => t.r === rx.id && t.c != null).slice(-20).map(t => t.c).sort((a, b) => a - b);
   if (ts.length < 5) return rx.limit;
   const q = ts[Math.min(ts.length - 1, Math.floor(ts.length * 0.75))];
@@ -296,18 +308,23 @@ function formHtml(f){
     '<div class="f"><label>動きの判定</label><div class="seg" data-seg="judge">' + ["アプリを開く", "NFCタグにかざす", "画面を押す"].map(k => '<button type="button" data-v="' + k + '" aria-pressed="' + (f.judge === k) + '">' + k + "</button>").join("") + "</div></div>" +
     (f.judge === "アプリを開く" ? '<div class="f"><label>開くアプリ(名前)</label><input id="f-app" value="' + v("app") + '" placeholder="例:AnkiDroid"></div>' : "") +
     '<div class="f"><label>合図から開いたとき、Cのボタンで開くもの(なくてもよい)</label><input id="f-open" value="' + v("open") + '" placeholder="AnkiDroid なら com.ichi2.anki、ウェブなら https://…"></div>' +
-    '<div class="f"><label>解除の動作(不快信号を止める動き)</label><div class="seg" data-seg="stop">' + Object.entries(STOPS).map(([k, l]) => '<button type="button" data-v="' + k + '" aria-pressed="' + ((f.stop || "タップ") === k) + '">' + l + "</button>").join("") + '</div><p class="note">今はタップだけです。ほかの動作は、あとから足せる部品になっています。</p></div>' +
-    '<div class="f"><label>始めの当たりの線(秒)。最初は、やり終えるのにかかる時間より少し長めに</label><input id="f-limit" type="number" step="0.1" min="0.3" value="' + v("limit0") + '"></div>' +
+    '<div class="f"><label>解除の動作(不快信号を止める動き)</label><div class="seg" data-seg="stop">' + Object.entries(STOPS).map(([k, l]) => '<button type="button" data-v="' + k + '" aria-pressed="' + ((f.stop || "タップ") === k) + '">' + l + "</button>").join("") + '</div><p class="note">解除の動作は部品として取り替えられます。</p></div>' +
+    ((f.stop || "タップ") === "声で宣言" ? '<div class="f"><label>宣言の文(声に出して言う。空なら「' + esc((f.kind === "再現" ? f.bwhat : f.cwhat) || "動き") + '、やり終えた」)</label><input id="f-decl" value="' + v("decl") + '" placeholder="例:私は今、机に座っている"></div>' : "") +
+    '<div class="f"><label>最短時間(秒):どんなに急いでも、これより速くは終わらない時間。これより速いタップは無効</label><input id="f-min" type="number" step="0.5" min="0" value="' + v("minTime") + '"></div>' +
+    '<div class="f"><label>不快信号までの時間(秒):合図からこの時間までに解除できなければ、不快信号が来る</label><input id="f-limit" type="number" step="0.5" min="1" value="' + v("limit0") + '"></div>' +
+    '<div class="f"><label><input type="checkbox" id="f-rand" style="width:auto"' + (f.randomFire === false ? "" : " checked") + '> 不快信号が来る瞬間を、最短時間〜上の時間のあいだで毎回ランダムにする(いつ来るか分からない)</label></div>' +
+    '<div class="f"><label><input type="checkbox" id="f-auto" style="width:auto"' + (f.autoShrink ? " checked" : "") + '> 不快信号までの時間を、記録に合わせて自動で縮める</label></div>' +
     '<div class="f"><label>1日の合図の回数(だいたい)</label><input id="f-per" type="number" min="1" max="60" value="' + v("perDay") + '"></div>' +
     '<div class="f"><label>合図が来ない時間(例:00:00-07:00, 13:00-15:30)</label><input id="f-quiet" value="' + v("quiet") + '"></div>' +
     '<p class="note">マナーモード(振動・サイレント)のあいだは、合図は来ません。</p>' +
     '<div class="row"><button type="button" class="btn" data-save>' + (f.id ? "保存する" : "作る") + '</button><button type="button" class="btn ghost" data-cancel>やめる</button></div></div>';
 }
 function readForm(){ const g = id => ($(id) || {}).value; const f = state.form;
-  ["name:f-name", "bwhat:f-bwhat", "bmark:f-bmark", "a:f-a", "cwhat:f-cwhat", "app:f-app", "open:f-open", "limit0:f-limit", "perDay:f-per", "quiet:f-quiet"].forEach(s => { const [k, id] = s.split(":"); const x = g(id); if (x != null) f[k] = x; }); }
+  ["name:f-name", "bwhat:f-bwhat", "bmark:f-bmark", "a:f-a", "cwhat:f-cwhat", "app:f-app", "open:f-open", "limit0:f-limit", "perDay:f-per", "quiet:f-quiet", "minTime:f-min", "decl:f-decl"].forEach(s => { const [k, id] = s.split(":"); const x = g(id); if (x != null) f[k] = x; });
+  if ($("f-rand")) f.randomFire = $("f-rand").checked; if ($("f-auto")) f.autoShrink = $("f-auto").checked; }
 function renderLog(){
   const D = state.data, ts = D.trials.slice().reverse().slice(0, 120), nm = id => ((D.reflexes.find(x => x.id === id) || {}).name || id);
-  $("log").innerHTML = "<h2>記録 <small class=\"note\">新しい順 ・ " + D.trials.length + "回</small></h2>" + (ts.length ? '<div class="box">' + ts.map(t => '<div class="tr"><span>' + md(t.at) + "</span><span>" + esc(t.mode) + "</span><span>" + esc(nm(t.r)) + (t.b != null ? ' <small class="note">B ' + fmtS(t.b) + "</small>" : "") + '</span><span class="' + (isHit(t) ? "h" : "m") + '">' + (t.c != null ? fmtS(t.c) : (t.miss === "B" ? "B外れ" : "時間切れ")) + "</span></div>").join("") + "</div>"
+  $("log").innerHTML = "<h2>記録 <small class=\"note\">新しい順 ・ " + D.trials.length + "回</small></h2>" + (ts.length ? '<div class="box">' + ts.map(t => '<div class="tr"><span>' + md(t.at) + (t.tapAt ? '<small class="note" style="display:block">→ ' + md(t.tapAt).split(" ")[1] + ":" + String(new Date(t.tapAt).getSeconds()).padStart(2, "0") + "</small>" : "") + "</span><span>" + esc(t.mode) + "</span><span>" + esc(nm(t.r)) + (t.b != null ? ' <small class="note">B ' + fmtS(t.b) + "</small>" : "") + '</span><span class="' + (isHit(t) ? "h" : "m") + '">' + (t.c != null && !t.invalid ? fmtS(t.c) : (t.invalid ? "速すぎ(無効)" : t.miss === "B" ? "B外れ" : "時間切れ")) + "</span></div>").join("") + "</div>"
     : '<div class="box"><p class="note">まだ記録がありません。合図局から記録が届くか、道場で稽古すると、ここに並びます。</p></div>');
 }
 
@@ -345,32 +362,66 @@ function dojoEnd(now){ const d = state.dojo, rx = state.data.reflexes.find(x => 
   state.data.trials.push(t); dojoArm(); }
 
 /* ───────── 合図から開いたとき ─────────
-   合図の通知をタップ = 解除の動作(やり終えたらタップ)。タップした瞬間に、合図からの秒数を記録して、MacroDroid に解除を伝える。
-   発動のあと(MacroDroid が画面を前に出したとき)は、大きなボタンを押すと解除 */
+   通知をタップした瞬間 = 反射の速さ(合図からの秒数)を記録する。ただし最短時間より速いタップは無効(記録も解除もしない)。
+   解除は、解除の動作(声で宣言 / タップ)をやり終えた瞬間。それまで不快信号の時計は止まらない。
+   当たり = 解除が、発動の瞬間(最短時間〜上限のあいだでランダム、見えない)より前に終わったとき */
 function runRecord(t){ state.data.trials.push(t); const rx = state.data.reflexes.find(x => x.id === t.r);
   const nl = nextLimit(rx); if (nl !== rx.limit) { rx.limit = nl; (rx.limitLog = rx.limitLog || []).push({ d: new Date().toISOString(), v: nl }); }
   save(); }
 function runCue(){ const R = state.run; let c = R.id ? state.cues.find(x => x.id === R.id) : null;
   if (!c && R.src === "esc") { const done = new Set(state.data.trials.map(t => t.cue)); c = state.cues.filter(x => x.at <= Date.now() && !done.has(x.id)).slice(-1)[0] || null; }
   return c; }
-function runFinish(when){ const R = state.run, c = runCue(), rx = state.data.reflexes.find(x => x.id === (c ? c.r : R.r)); if (!rx) return;
-  const at = c ? c.at : R.at, sec = Math.max(0, (when - at) / 1000), id = c ? c.id : R.id;
-  R.result = { cue: id, at: new Date(at).toISOString(), r: rx.id, mode: "合図", b: null, c: Math.round(sec * 1000) / 1000, miss: null, limit: (c && c.line) || rx.limit, stop: rx.stop || "タップ" };
-  runRecord(R.result); callHook({ kaijo: 1, cue: id }); renderRun(); }
+function runCtx(){ const R = state.run, c = runCue(), rx = state.data.reflexes.find(x => x.id === (c ? c.r : R.r));
+  const at = c ? c.at : R.at, line = (c && c.line) || (rx && rx.limit) || 30, min = c && c.min != null ? c.min : ((rx && +rx.minTime) || 0);
+  return { R, c, rx, at, id: c ? c.id : R.id, line, min, fireAt: at + line * 1000 }; }
+function runFinish(doneAt){ const { R, rx, at, id, line, fireAt } = runCtx(); if (!rx) return;
+  const tap = R.src === "esc" ? doneAt : R.tap, sec = Math.max(0, (tap - at) / 1000);
+  R.result = { cue: id, at: new Date(at).toISOString(), tapAt: new Date(tap).toISOString(), doneAt: new Date(doneAt).toISOString(), r: rx.id, mode: "合図", b: null,
+    c: Math.round(sec * 1000) / 1000, miss: doneAt > fireAt ? "発動後" : null, limit: line, stop: rx.stop || "タップ" };
+  if (doneAt > fireAt) R.result.c = Math.max(R.result.c, line + 0.001);   // 発動の瞬間を過ぎてからの解除は外れ
+  runRecord(R.result); callHook({ kaijo: 1, cue: id }); stopListen(); renderRun(); }
+function runInvalid(){ const { R, rx, at, id, line, min } = runCtx();
+  R.result = { cue: id, at: new Date(at).toISOString(), tapAt: new Date(R.tap).toISOString(), r: rx.id, mode: "合図", b: null, c: null, miss: "速すぎ", invalid: true, limit: line, min, stop: rx.stop || "タップ" };
+  runRecord(R.result); renderRun(); }   // 解除は伝えない(不快信号はそのまま来る)
+/* 声の聞き取り(Chrome の聞き取りの機能) */
+let rec = null;
+function stopListen(){ try { rec && rec.abort(); } catch (e) {} rec = null; }
+function listen(){ const Sp = window.SpeechRecognition || window.webkitSpeechRecognition, R = state.run, { rx } = runCtx();
+  if (!Sp) { R.voiceErr = "このブラウザでは声の聞き取りが使えません"; renderRun(); return; }
+  stopListen(); rec = new Sp(); rec.lang = "ja-JP"; rec.interimResults = false; rec.maxAlternatives = 5;
+  R.listening = true; R.heard = ""; renderRun();
+  rec.onresult = e => { const alts = Array.from(e.results[0] || []).map(x => x.transcript), best = alts.reduce((m, t) => Math.max(m, similar(t, declOf(rx))), 0);
+    R.heard = alts[0] || ""; R.listening = false;
+    if (best >= 0.7) runFinish(Date.now()); else { R.voiceErr = "宣言の文と違いました。もう一度、はっきり言ってください"; renderRun(); } };
+  rec.onerror = ev => { R.listening = false; R.voiceErr = ev && ev.error === "not-allowed" ? "マイクの使用を許可してください" : "聞き取れませんでした。もう一度"; renderRun(); };
+  rec.onend = () => { if (R.listening) { R.listening = false; renderRun(); } };
+  try { rec.start(); } catch (e) { R.listening = false; R.voiceErr = "聞き取りを始められませんでした"; renderRun(); } }
 function renderRun(){
-  const R = state.run, box = $("run"), D = state.data, c = runCue(), rx = D.reflexes.find(x => x.id === (c ? c.r : R.r));
+  const { R, rx, id, line, min, at } = runCtx(), box = $("run"), D = state.data;
   if (!rx) { callHook({ kaijo: 1 }); box.innerHTML = '<div class="box"><p>この合図の反射が見つかりません(不快信号は止めました)。</p></div>'; return; }
-  const id = c ? c.id : R.id, done = D.trials.find(t => t.cue === id);
-  if (R.result) { const t = R.result, hit = isHit(t);
+  const done = D.trials.find(t => t.cue === id);
+  const close = '<div class="row" style="justify-content:center"><button type="button" class="btn ghost sm" data-run-close>人工反射に戻る</button></div>';
+  if (R.result) { const t = R.result;
+    if (t.invalid) { box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="color:var(--miss);font-size:2rem">速すぎる。無効</div><div class="lab">最短 ' + fmtS(t.min) + " より前のタップは数えません。解除もされないので、不快信号はそのまま来ます</div>" + close + "</div>"; return; }
+    const hit = isHit(t) && !t.miss;
     box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="color:' + (hit ? "var(--hit)" : "var(--miss)") + '">' + fmtS(t.c) + "</div>" +
-      '<div class="lab">' + (hit ? "当たり(線 " + fmtS(t.limit) + ")" : "外れ ・ 線 " + fmtS(t.limit) + " を過ぎた") + " ・ 連続 " + statsOf(rx).streak + "</div>" +
-      (openHref(rx.c.open) ? '<a class="go" href="' + esc(openHref(rx.c.open)) + '">' + esc(rx.c.what) + "へ</a>" : "") +
-      '<div class="row" style="justify-content:center"><button type="button" class="btn ghost sm" data-run-close>人工反射に戻る</button></div></div>'; return; }
-  if (done) { callHook({ kaijo: 1, cue: id }); box.innerHTML = '<div class="dojo"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="font-size:1.6rem">この合図はもう記録済み</div><div class="lab">' + (done.c != null ? fmtS(done.c) : "外れ") + "</div>" +
-      '<div class="row" style="justify-content:center"><button type="button" class="btn ghost sm" data-run-close>人工反射に戻る</button></div></div>'; return; }
-  if (R.src !== "esc") { runFinish(R.tap); return; }   // 通知のタップが、そのまま解除
-  box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + ' ・ 線を過ぎています</div><div class="big">' + esc(rx.kind === "再現" ? rx.b.what : rx.c.what) + "</div>" +
-    '<button type="button" class="go" data-run-stop>やり終えた(止める)</button><div class="lab">押した瞬間までの秒数を記録します</div></div>';
+      '<div class="lab">' + (hit ? "当たり" : "外れ ・ 不快信号のあと") + " ・ 連続 " + statsOf(rx).streak + "</div>" +
+      (openHref(rx.c.open) ? '<a class="go" href="' + esc(openHref(rx.c.open)) + '">' + esc(rx.c.what) + "へ</a>" : "") + close + "</div>"; return; }
+  if (done) { if (!done.invalid) callHook({ kaijo: 1, cue: id });
+    box.innerHTML = '<div class="dojo"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="font-size:1.6rem">この合図はもう記録済み</div><div class="lab">' + (done.invalid ? "速すぎ(無効)" : done.c != null ? fmtS(done.c) : "外れ") + "</div>" + close + "</div>"; return; }
+  if (R.src !== "esc" && !R.passedMin) {
+    if ((R.tap - at) / 1000 < min) { runInvalid(); return; }   // 最短時間より速いタップは無効
+    R.passedMin = true; }
+  if ((rx.stop || "タップ") === "タップ") { if (R.src !== "esc") { runFinish(R.tap); return; }
+    box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + ' ・ 不快信号が出ています</div><div class="big">' + esc(rx.kind === "再現" ? rx.b.what : rx.c.what) + '</div><button type="button" class="go" data-run-stop>やり終えた(止める)</button></div>'; return; }
+  // 声で宣言
+  const phrase = declOf(rx);
+  box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + (R.src === "esc" ? " ・ 不快信号が出ています" : "") + '</div>' +
+    '<div class="lab">声に出して宣言する</div><div class="big" style="font-size:2rem;line-height:1.35">「' + esc(phrase) + '」</div>' +
+    '<button type="button" class="go" data-run-listen>' + (R.listening ? "聞いています…" : "話す") + "</button>" +
+    (R.heard ? '<div class="lab">聞こえた:「' + esc(R.heard) + "」</div>" : "") + (R.voiceErr ? '<div class="lab" style="color:var(--miss)">' + esc(R.voiceErr) + "</div>" : "") +
+    '<div class="lab">言い終わるまで、不快信号の時計は止まりません</div></div>';
+  if (!R.autoTried && !R.listening) { R.autoTried = true; setTimeout(listen, 50); }
 }
 
 /* ───────── 合図局 ───────── */
@@ -448,7 +499,7 @@ function showView(v){ state.view = v; document.querySelectorAll("nav.tabs button
 document.addEventListener("click", async e => {
   const q = s => e.target.closest && e.target.closest(s); let b;
   if ((b = q("nav.tabs [data-view]"))) { showView(b.dataset.view); return; }
-  if (q("[data-new]")) { state.form = { kind: "再現", judge: "アプリを開く", limit0: 30, perDay: 12, quiet: "00:00-07:00", stop: "タップ" }; state.open = null; render(); return; }
+  if (q("[data-new]")) { state.form = { kind: "人工", judge: "画面を押す", limit0: 30, minTime: 5, perDay: 8, quiet: "00:00-07:00", stop: "声で宣言", randomFire: true }; state.open = null; render(); return; }
   if (q("[data-cancel]")) { state.form = null; render(); return; }
   if ((b = q("[data-seg] [data-v]"))) { const seg = b.closest("[data-seg]").dataset.seg, v = b.dataset.v;
     if (seg === "kind" || seg === "judge" || seg === "stop") { readForm(); state.form[seg] = v; render(); return; }
@@ -457,15 +508,15 @@ document.addEventListener("click", async e => {
   if (q("[data-save]")) { readForm(); const f = state.form;
     if (!String(f.name || "").trim() || !String(f.cwhat || "").trim() || (f.kind === "再現" && !String(f.bwhat || "").trim())) { toast("名前と動き(再現ならBも)を書いてください"); return; }
     const lim = Math.max(0.3, +f.limit0 || 5);
-    await save(d => { if (f.id) { const rx = d.reflexes.find(x => x.id === f.id); Object.assign(rx, { name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() }, limit0: lim, perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ" }); if (rx.limit > lim) rx.limit = lim; }
+    await save(d => { if (f.id) { const rx = d.reflexes.find(x => x.id === f.id); Object.assign(rx, { name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() }, limit0: lim, perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink }); if (rx.limit > lim || !rx.autoShrink) rx.limit = lim; }
       else { const n = d.reflexes.reduce((m, x) => Math.max(m, +String(x.id).replace(/\D/g, "") || 0), 0) + 1;
         d.reflexes.push({ id: "RF" + n, name: f.name.trim(), kind: f.kind, a: (f.a || "").trim(), b: { what: (f.bwhat || "").trim(), mark: (f.bmark || "").trim() }, c: { what: f.cwhat.trim(), judge: f.judge, app: (f.app || "").trim(), open: (f.open || "").trim() },
-          limit0: lim, limit: lim, limitLog: [{ d: new Date().toISOString(), v: lim }], perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", created: new Date().toISOString() }); } });
+          limit0: lim, limit: lim, limitLog: [{ d: new Date().toISOString(), v: lim }], perDay: +f.perDay || 12, quiet: (f.quiet || "").trim(), stop: f.stop || "タップ", minTime: Math.max(0, +f.minTime || 0), decl: (f.decl || "").trim(), randomFire: f.randomFire !== false, autoShrink: !!f.autoShrink, created: new Date().toISOString() }); } });
     state.form = null; render(); return; }
   if ((b = q("[data-open]"))) { state.open = b.dataset.open; render(); return; }
   if (q("[data-close]")) { state.open = null; render(); return; }
   if ((b = q("[data-edit]"))) { const rx = state.data.reflexes.find(x => x.id === b.dataset.edit);
-    state.form = { id: rx.id, name: rx.name, kind: rx.kind, a: rx.a, bwhat: rx.b.what, bmark: rx.b.mark, cwhat: rx.c.what, judge: rx.c.judge, app: rx.c.app, open: rx.c.open, stop: rx.stop, limit0: rx.limit0, perDay: rx.perDay, quiet: rx.quiet }; state.open = null; render(); return; }
+    state.form = { id: rx.id, name: rx.name, kind: rx.kind, a: rx.a, bwhat: rx.b.what, bmark: rx.b.mark, cwhat: rx.c.what, judge: rx.c.judge, app: rx.c.app, open: rx.c.open, stop: rx.stop, minTime: rx.minTime, decl: rx.decl, randomFire: rx.randomFire, autoShrink: rx.autoShrink, limit0: rx.limit0, perDay: rx.perDay, quiet: rx.quiet }; state.open = null; render(); return; }
   if ((b = q("[data-archive]"))) { if (!confirm("この反射をしまいますか(記録は残ります)。")) return; const id = b.dataset.archive; await save(d => { d.reflexes.find(x => x.id === id).archived = new Date().toISOString(); }); state.open = null; render(); return; }
   if ((b = q("[data-dojo-go]"))) { state.dojo = { r: b.dataset.dojoGo, on: false }; showView("dojo"); return; }
   if ((b = q("[data-cue-go]"))) { state.cueFor = b.dataset.cueGo; showView("cue"); return; }
@@ -487,6 +538,7 @@ document.addEventListener("click", async e => {
     await save(d => { d.trials.push({ cue: id, at: new Date(c.at).toISOString(), r: c.r, mode: "合図", b: null, c: null, miss: "応答なし", limit: (d.reflexes.find(x => x.id === c.r) || {}).limit }); d.trials.sort((x, y) => x.at < y.at ? -1 : 1); }); return; }
   if ((b = q("[data-ua-skip]"))) { const id = b.dataset.uaSkip; await save(d => { d.skipped = (d.skipped || []).concat([id]).slice(-500); }); return; }
   if (q("[data-run-stop]")) { beep("miss"); runFinish(Date.now()); return; }
+  if (q("[data-run-listen]")) { listen(); return; }
   if (q("[data-run-close]")) { state.run = null; showView("rx"); return; }
 });
 
@@ -499,7 +551,8 @@ document.addEventListener("click", async e => {
   if (state.run) { state.view = "run"; document.querySelectorAll(".view").forEach(x => { x.hidden = x.id !== "v-run"; }); $("run").innerHTML = '<div class="dojo cue"><div class="big" style="font-size:1.4rem">読み込んでいます</div></div>';
     (state.conn ? sync() : Promise.resolve()).then(() => { state.ready = true; renderRun(); }); }
   else { state.ready = true; render(); if (state.conn) sync(); else showView("set"); }
-  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS };
+  if ("serviceWorker" in navigator && !window.__jinkoTest && location.protocol === "https:") navigator.serviceWorker.register("./sw.js").catch(() => {});
+  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf };
 })();
 </script>
 
