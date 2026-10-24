@@ -119,21 +119,31 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j10";
+const APP_VERSION = "2026-10-24 j12";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
 const CUES = date => "roadmap/apps/jinko/cues/" + date + ".json", JST = 9 * 3600e3, jstDate = ms => new Date(ms + JST).toISOString().slice(0, 10);
 // 出す場面(MacroDroid が検知できるものだけ)。印は合図の文の末尾に付く
 const SCENES = [
-  { id: "home", tag: "《家》", label: "家にいるとき", how: "Wi-Fi が家のSSID、または 場所が自宅" },
-  { id: "out", tag: "《外》", label: "外にいるとき", how: "Wi-Fi が家のSSIDでない、かつ 場所が自宅から離れている" },
-  { id: "still", tag: "《静》", label: "止まっているとき", how: "アクティビティが「静止」" },
-  { id: "walk", tag: "《歩》", label: "歩いているとき", how: "アクティビティが「徒歩/ランニング」" },
-  { id: "vehicle", tag: "《乗》", label: "乗り物のとき", how: "アクティビティが「自動車/自転車」" },
-  { id: "charging", tag: "《充》", label: "充電中", how: "電源が接続されている" },
-  { id: "headset", tag: "《耳》", label: "イヤホン接続中", how: "ヘッドフォンが接続されている" },
-  { id: "wifi", tag: "《線》", label: "Wi-Fi 接続中(SSIDを指定)", how: "Wi-Fi が指定のSSIDに接続" }
+  { id: "home", label: "家にいるとき", how: "Wi-Fi が家のSSID、または 場所が自宅" },
+  { id: "out", label: "外にいるとき", how: "上の「家にいるとき」でない" },
+  { id: "place", label: "決めた場所にいるとき", how: "場所(ジオフェンス)の中" },
+  { id: "still", label: "止まっているとき", how: "アクティビティが「静止」" },
+  { id: "walk", label: "歩いているとき", how: "アクティビティが「徒歩/ランニング」" },
+  { id: "vehicle", label: "乗り物のとき", how: "アクティビティが「自動車/自転車」" },
+  { id: "wifi", label: "Wi-Fi 接続中(SSID指定)", how: "Wi-Fi が指定のSSIDに接続" },
+  { id: "bt", label: "Bluetooth 接続中", how: "指定の Bluetooth 機器に接続" },
+  { id: "headset", label: "イヤホン接続中", how: "ヘッドフォンが接続されている" },
+  { id: "charging", label: "充電中", how: "電源が接続されている" },
+  { id: "morning", label: "朝(時間帯)", how: "時刻が指定の時間帯(朝)" },
+  { id: "night", label: "夜(時間帯)", how: "時刻が指定の時間帯(夜)" },
+  { id: "weekday", label: "平日", how: "曜日が月〜金" },
+  { id: "weekend", label: "休日", how: "曜日が土日" },
+  { id: "screenon", label: "画面がついているとき", how: "画面がオン" },
+  { id: "unlocked", label: "ロック解除中", how: "画面のロックが解除されている" },
+  { id: "airplane", label: "機内モード中", how: "機内モードがオン" },
+  { id: "batlow", label: "電池が少ないとき", how: "電池残量が指定の%以下" }
 ];
 const sceneOf = id => SCENES.find(s => s.id === id);
 const $ = id => document.getElementById(id);
@@ -466,7 +476,8 @@ function render(){
   $("issue-box").innerHTML = D.issue ? '<p>記録の受け口:Issue <b>#' + D.issue + '</b>(人工反射の記録)</p><div class="row"><button type="button" class="btn ghost sm" id="reimport">記録を読み込み直す</button></div>'
     : '<p class="note">合図局(MacroDroid)から届く記録の受け口として、記録のリポジトリにIssueを1つ作ります。</p><div class="row"><button type="button" class="btn ghost sm" id="mkissue"' + (state.conn ? "" : " disabled") + ">記録の受け口を作る</button></div>";
   $("ntfy-box").innerHTML = '<p class="note">合図はntfyで届きます。トピックの名前は、ほかの人に当てられない長い名前にしてください(知っている人は合図を送れてしまうので)。</p>' +
-    '<div class="f"><label>トピック</label><input id="ntfy-topic" value="' + esc(D.ntfy || "") + '" placeholder="例:jinko-…"></div><div class="row"><button type="button" class="btn ghost sm" id="ntfy-make">長い名前を作る</button><button type="button" class="btn sm" id="ntfy-save">保存する</button></div>';
+    '<div class="f"><label>トピック</label><input id="ntfy-topic" value="' + esc(D.ntfy || "") + '" placeholder="例:jinko-…"></div><div class="row"><button type="button" class="btn ghost sm" id="ntfy-make">長い名前を作る</button><button type="button" class="btn sm" id="ntfy-save">保存する</button></div>' +
+      (D.ntfy ? '<div class="row"><button type="button" class="btn ghost sm" id="ntfy-test">通知を試す</button><button type="button" class="btn ghost sm" id="ntfy-test-home">《家》つきで試す</button><span class="note" id="ntfy-test-msg"></span></div><p class="note">押すと、今のトピックに試しの通知を送ります。スマホに届くまでの速さ(遅れ)を確かめられます。</p>' : "");
   $("ver").textContent = "版 " + APP_VERSION;
 }
 function showView(v){ state.view = v; document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.view === v))); document.querySelectorAll(".view").forEach(s => { s.hidden = s.id !== "v-" + v; });
@@ -512,6 +523,13 @@ document.addEventListener("click", async e => {
   if (e.target.id === "hook-test") { const ok2 = await callHook({ kaijo: 1, test: 1 }); $("hook-msg").textContent = ok2 ? "送りました(スマホが短く振動すれば成功)" : "URLを入れてください"; return; }
   if (e.target.id === "ntfy-make") { const a = new Uint8Array(12); crypto.getRandomValues(a); $("ntfy-topic").value = "jinko-" + Array.from(a, x => x.toString(36).padStart(2, "0")).join("").slice(0, 20); return; }
   if (e.target.id === "ntfy-save") { const v = $("ntfy-topic").value.trim(); await save(d => { d.ntfy = v; }); toast("保存しました"); return; }
+  if (e.target.id === "ntfy-test" || e.target.id === "ntfy-test-home") { const topic = state.data.ntfy; if (!topic) { toast("先にトピックを保存してください"); return; }
+    const home = e.target.id === "ntfy-test-home", msg = $("ntfy-test-msg"), t0 = Date.now();
+    if (msg) { msg.textContent = "送信中…"; msg.className = "note"; }
+    try { await fetch("https://ntfy.sh/" + encodeURIComponent(topic), { method: "POST", body: "合図(人工反射):テスト" + (home ? " #home" : ""), headers: { Title: "合図(人工反射)", Priority: "5", Tags: "zap" } });
+      if (msg) msg.textContent = "送りました(" + (Date.now() - t0) + "ミリ秒で受付)。スマホに通知が出るまでの時間が、実際の遅れです" + (home ? "。家にいれば出て、外なら消えます" : "");
+    } catch (x) { if (msg) { msg.textContent = "送れませんでした(ネットを確かめてください)"; msg.className = "note err"; } }
+    return; }
   if ((b = q("[data-ua-miss]"))) { const id = b.dataset.uaMiss, c = state.cues.find(x => x.id === id);
     await save(d => { d.trials.push({ cue: id, at: new Date(c.at).toISOString(), r: c.r, mode: "合図", b: null, c: null, miss: "応答なし", limit: (d.reflexes.find(x => x.id === c.r) || {}).limit }); d.trials.sort((x, y) => x.at < y.at ? -1 : 1); }); return; }
   if ((b = q("[data-ua-skip]"))) { const id = b.dataset.uaSkip; await save(d => { d.skipped = (d.skipped || []).concat([id]).slice(-500); }); return; }
@@ -652,7 +670,7 @@ SE.init([
   ["[data-archive], [data-ua-miss]", "remove"],
   ["[data-open], [data-new], [data-edit], [data-cue-go], [data-dojo-go]", "open"],
   ["[data-close], [data-cancel], [data-run-close], [data-ua-skip]", "tab"],
-  ["#connect, #reimport, #mkissue, #hook-test, #ntfy-make", "open"],
+  ["#connect, #reimport, #mkissue, #hook-test, #ntfy-make, #ntfy-test, #ntfy-test-home", "open"],
   ["[data-seg] [data-v]", el => el.getAttribute("aria-pressed") === "true" ? "toggleOff" : "toggleOn"],
   ["nav.tabs button", "tab"]
 ]);
