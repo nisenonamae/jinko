@@ -31,8 +31,8 @@ export function plan(rx, dayStartMs, startMs, rand, minGap){
 export const cueText = rx => rx.kind === "再現" ? (rx.b && rx.b.what) || "B" : (rx.c && rx.c.what) || "動く";
 // 通知の名前。MacroDroid が「含む」で見分けるので、片方がもう片方を含まないようにする
 export const CUE_TITLE = "合図(人工反射)", FIRE_TITLE = "不快信号(人工反射)";
-const SCENE_TAG = { home: "《家》", out: "《外》", still: "《静》", walk: "《歩》", vehicle: "《乗》", charging: "《充》", headset: "《耳》", wifi: "《線》" };
-export const sceneTags = rx => (rx.scenes || []).map(id => SCENE_TAG[id] || "").join("");
+// 場面のコードを合図の文に付ける(MacroDroid の1つのマクロが読む)
+export const sceneCode = rx => (rx.scenes || []).length ? " #" + rx.scenes.join(",") : "";
 
 export async function main(){
   const { DATA_REPO, DATA_TOKEN, NTFY_TOPIC } = env, BR = env.DATA_BRANCH || "main", NTFY = env.NTFY_SERVER || "https://ntfy.sh", APP = env.APP_URL, GAP = +(env.MIN_GAP_MIN || 15);
@@ -52,7 +52,7 @@ export async function main(){
       const at = times[i], id = date.replace(/-/g, "") + "-" + rx.id + "-" + (i + 1);
       const click = APP + (APP.includes("?") ? "&" : "?") + "cue=" + encodeURIComponent(id) + "&r=" + encodeURIComponent(rx.id) + "&at=" + at;
       const r = await fetch(NTFY, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic: NTFY_TOPIC, title: CUE_TITLE, message: CUE_TITLE + ":" + cueText(rx) + sceneTags(rx), priority: 5, tags: ["zap"], click, delay: String(Math.floor(at / 1000)) }) });
+        body: JSON.stringify({ topic: NTFY_TOPIC, title: CUE_TITLE, message: CUE_TITLE + ":" + cueText(rx) + sceneCode(rx), priority: 5, tags: ["zap"], click, delay: String(Math.floor(at / 1000)) }) });
       if (!r.ok) throw new Error("ntfy への予約に失敗(" + r.status + ")");
       // 発動の瞬間:最短時間〜上限(不快信号までの時間)のあいだで毎回ランダム(ランダムを切った反射は上限ちょうど)
       const max = Math.max(1, +rx.limit || +rx.limit0 || 30), min = Math.min(max, Math.max(0, +rx.minTime || 0));
