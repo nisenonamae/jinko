@@ -52,11 +52,13 @@ export async function main(){
       const r = await fetch(NTFY, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: NTFY_TOPIC, title: CUE_TITLE, message: CUE_TITLE + ":" + cueText(rx), priority: 5, tags: ["zap"], click, delay: String(Math.floor(at / 1000)) }) });
       if (!r.ok) throw new Error("ntfy への予約に失敗(" + r.status + ")");
-      const line = Math.max(1, +rx.limit || +rx.limit0 || 30), fire = at + Math.round(line * 1000);
+      // 発動の瞬間:最短時間〜上限(不快信号までの時間)のあいだで毎回ランダム(ランダムを切った反射は上限ちょうど)
+      const max = Math.max(1, +rx.limit || +rx.limit0 || 30), min = Math.min(max, Math.max(0, +rx.minTime || 0));
+      const line = Math.round((rx.randomFire === false ? max : min + Math.random() * (max - min)) * 10) / 10, fire = at + Math.round(line * 1000);
       const r2 = await fetch(NTFY, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: NTFY_TOPIC, title: FIRE_TITLE, message: FIRE_TITLE + ":" + cueText(rx) + "。今すぐ", priority: 1, click: click + "&src=esc", delay: String(Math.floor(fire / 1000)) }) });
       if (!r2.ok) throw new Error("ntfy への予約に失敗(" + r2.status + ")");
-      file.cues.push({ id, r: rx.id, at, line }); sent++;
+      file.cues.push({ id, r: rx.id, at, line, min }); sent++;
     }
   }
   file.cues.sort((a, b) => a.at - b.at);
