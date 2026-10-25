@@ -93,7 +93,7 @@ details.box summary{cursor:pointer}
     <div class="f"><label>リポジトリ</label><input id="c-repo" placeholder="notion-daily"></div>
     <div class="f"><label>ブランチ</label><input id="c-branch" placeholder="main"></div>
     <div class="f"><label>トークン</label><input id="c-token" type="password"></div>
-    <div class="row"><button type="button" class="btn" id="connect">接続して読み込む</button><span class="note" id="c-msg"></span></div>
+    <div class="row"><button type="button" class="btn" id="connect">接続して読み込む</button><button type="button" class="btn ghost sm" id="diag">つながりを確かめる</button></div><p class="note" id="c-msg"></p><div id="diag-out"></div>
   </div>
   <h2>合図の通り道(ntfy)</h2>
   <div class="box" id="ntfy-box"></div>
@@ -119,7 +119,7 @@ details.box summary{cursor:pointer}
 
 <script>
 "use strict";
-const APP_VERSION = "2026-10-24 j14";
+const APP_VERSION = "2026-10-25 j16";
 const DATA = "roadmap/apps/jinko/data.json", LINE = id => "roadmap/apps/jinko/line-" + id + ".txt", KEY = "jinko-conn", KEY_LOCAL = "jinko-local";
 const KINDS = { "人工": "① 人工の合図", "気づける": "② スマホが気づける場面", "再現": "③ 再現の稽古(A→B→C)" };
 const state = { conn: null, data: null, sha: null, lineSha: {}, open: null, form: null, view: "rx", dojo: null, cues: [], run: null };
@@ -178,18 +178,57 @@ const api = () => "https://api.github.com/repos/" + encodeURIComponent(state.con
 const hdr = extra => Object.assign({ Authorization: "Bearer " + state.conn.token, Accept: "application/vnd.github+json" }, extra || {});
 const b64e = s => { const b = new TextEncoder().encode(s); let x = ""; b.forEach(c => x += String.fromCharCode(c)); return btoa(x); };
 const b64d = s => { const x = atob(String(s).replace(/\s/g, "")), u = new Uint8Array(x.length); for (let i = 0; i < x.length; i++) u[i] = x.charCodeAt(i); return new TextDecoder().decode(u); };
-async function gh(path, opts){ const r = await fetch(api() + path, Object.assign({ cache: "no-store" }, opts || {}, { headers: hdr((opts || {}).headers) }));
-  if (!r.ok) { const e = new Error(r.status === 401 ? "トークンが無効です" : "GitHubとの通信に失敗しました(" + r.status + ")"); e.status = r.status; throw e; } return r.status === 204 ? null : r.json(); }
-async function readFile(p){ try { const j = await gh("/contents/" + p + "?ref=" + encodeURIComponent(state.conn.branch)); return { text: b64d(j.content), sha: j.sha }; } catch (e) { if (e.status === 404) return { text: null, sha: null }; throw e; } }
+const WHY = { 401: "トークンが無効か、期限切れ", 403: "トークンにこの操作の許可がない(または短時間に使いすぎ)", 404: "見つからない(リポジトリ名・ブランチ・Issue番号を確かめる)", 409: "ほかの端末の書き込みとぶつかった", 422: "ほかの端末の書き込みとぶつかった", 429: "短時間に使いすぎ。少し待つ" };
+async function gh(path, opts){
+  let r; try { r = await fetch(api() + path, Object.assign({ cache: "no-store" }, opts || {}, { headers: hdr((opts || {}).headers) })); }
+  catch (x) { const e = new Error("ネットにつながっていない(電波・機内モードを確かめる)"); e.status = 0; throw e; }
+  if (!r.ok) { const e = new Error((WHY[r.status] || (r.status >= 500 ? "GitHub側の不調。少し待つ" : "GitHubとの通信に失敗")) + "(" + r.status + ")"); e.status = r.status; throw e; } return r.status === 204 ? null : r.json(); }
+async function readFile(p){ try { const j = await gh("/contents/" + p + "?ref=" + encodeURIComponent(state.conn.branch) + "&t=" + Date.now()); return { text: b64d(j.content), sha: j.sha }; } catch (e) { if (e.status === 404) return { text: null, sha: null }; throw e; } }
 async function writeFile(p, text, sha, msg){ const j = await gh("/contents/" + p, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ message: msg || "人工反射", content: b64e(text), branch: state.conn.branch }, sha ? { sha } : {})) }); return j.content.sha; }
-async function save(mutate){
-  if (mutate) mutate(state.data);
-  lsSet(KEY_LOCAL, state.data); render();
-  if (!state.conn) return;
-  for (let i = 0; i < 3; i++) {
-    try { state.sha = await writeFile(DATA, JSON.stringify(state.data), state.sha); lsSet(KEY_LOCAL, state.data); return; }
-    catch (e) { if ((e.status === 409 || e.status === 422) && i < 2) { const f = await readFile(DATA); const fresh = f.text ? JSON.parse(f.text) : blank(); state.sha = f.sha; if (mutate) mutate(fresh); state.data = norm(fresh); continue; } toast(e.message); return; }
+/* 2つの記録を合わせる:設定や反射は新しい版(rev の大きいほう)、記録(trials)と外した合図(skipped)は両方の和 */
+const trialKey = t => t.cue || t.cid || (t.r + "|" + t.at + "|" + t.mode);
+function mergeData(a, b){
+  if (!a) return b; if (!b) return a;
+  const base = (b.rev || 0) >= (a.rev || 0) ? b : a, other = base === a ? b : a, out = JSON.parse(JSON.stringify(base));
+  // 同じ合図の記録が2つあれば、先に答えたほう(最初の反応)を残す
+  const when = t => Date.parse(t.doneAt || t.tapAt || t.at) || 0, idx = new Map(); (out.trials || []).forEach((t, i) => idx.set(trialKey(t), i));
+  (other.trials || []).forEach(t => { const k = trialKey(t); if (!idx.has(k)) { idx.set(k, out.trials.length); out.trials.push(t); return; }
+    const i = idx.get(k), cur = out.trials[i]; if (t.cue && cur.miss === "応答なし" && t.miss !== "応答なし") out.trials[i] = t; else if (t.cue && t.miss !== "応答なし" && cur.miss !== "応答なし" && when(t) < when(cur)) out.trials[i] = t; });
+  out.trials.sort((x, y) => x.at < y.at ? -1 : 1); if (out.trials.length > 6000) out.trials = out.trials.slice(-6000);
+  out.skipped = Array.from(new Set((out.skipped || []).concat(other.skipped || []))).slice(-500);
+  out.seen = Array.from(new Set((out.seen || []).concat(other.seen || []))).slice(-400);
+  if (other.since && (!out.since || other.since > out.since)) out.since = other.since;
+  if (!out.issue && other.issue) out.issue = other.issue; if (!out.ntfy && other.ntfy) out.ntfy = other.ntfy;
+  out.rev = Math.max(a.rev || 0, b.rev || 0); return out;
+}
+const PENDING = "jinko-pending", wait = ms => new Promise(r => setTimeout(r, ms));
+let chain = Promise.resolve();
+const queue = fn => (chain = chain.then(fn, fn).catch(e => { console.error(e); }));
+async function pushNow(){
+  if (!state.conn) return true;
+  for (let i = 0; i < 8; i++) {
+    if (i) await wait(250 + Math.random() * 500 * i);   // 少しずつ、ばらばらに間をあける(ほかの端末と同じ瞬間にぶつからない)
+    try { state.sha = await writeFile(DATA, JSON.stringify(state.data), state.sha); lsSet(KEY_LOCAL, state.data); localStorage.removeItem(PENDING); return true; }
+    catch (e) {
+      if (e.status === 409 || e.status === 422) {
+        // GitHubは書かれた直後しばらく古い内容を返す。ぶつかった版と同じものが返るあいだは、待って読み直す
+        const stale = state.sha;
+        try { for (let k = 0; k < 8; k++) { const f = await readFile(DATA); if (f.sha && f.sha === stale && e.status === 409 && k < 7) { await wait(600 + Math.random() * 400); continue; }
+            if (f.text) { const remote = JSON.parse(f.text); state.data = norm(mergeData(remote, state.data)); state.data.rev = Math.max(state.data.rev || 0, (remote.rev || 0) + 1); } state.sha = f.sha; break; } } catch (x) {}
+        continue; }
+      lsSet(PENDING, 1); lsSet(KEY_LOCAL, state.data);
+      toast("いまGitHubに送れなかった:" + e.message + "。この端末に残してあり、次につながったときに送ります"); return false;
+    }
   }
+  lsSet(PENDING, 1); lsSet(KEY_LOCAL, state.data); toast("GitHubが混み合っています。この端末に残してあり、少しあとに自動で送ります"); setTimeout(() => queue(pushNow), 15000); return false;
+}
+function save(mutate){
+  if (mutate) mutate(state.data);
+  state.data.rev = (state.data.rev || 0) + 1;
+  lsSet(KEY_LOCAL, state.data); render();
+  if (!state.conn) return Promise.resolve();
+  lsSet(PENDING, 1);
+  return queue(pushNow);
 }
 const norm = d => Object.assign(blank(), d || {});
 
@@ -225,25 +264,36 @@ function nextLimit(rx){
   const q = ts[Math.min(ts.length - 1, Math.floor(ts.length * 0.75))];
   return Math.max(0.3, Math.min(rx.limit0, r1(q)));
 }
-async function sync(){
-  const msg = $("c-msg");
+function sync(onCore){ return queue(() => syncNow(onCore)); }
+async function syncNow(onCore){
+  const msg = $("c-msg"), errs = []; state.lastSync = Date.now();
   try {
-    const f = await readFile(DATA); state.data = norm(f.text ? JSON.parse(f.text) : lsGet(KEY_LOCAL, null)); state.sha = f.sha;
-    const added = await importLog();
-    let changed = added > 0;
+    const now0 = Date.now(), cueP = Promise.all([jstDate(now0 - 864e5), jstDate(now0)].map(day => readFile(CUES(day)).then(cf => cf.text ? (JSON.parse(cf.text).cues || []) : [], x => { errs.push("合図の予定(" + day + "):" + x.message); return []; })));
+    const [f, cueLists] = await Promise.all([readFile(DATA), cueP]), local = lsGet(KEY_LOCAL, null), remote = f.text ? JSON.parse(f.text) : null;
+    state.cues = [].concat(...cueLists).sort((a, b) => a.at - b.at);
+    state.data = norm(mergeData(remote, local)); state.sha = f.sha;
+    if (onCore) { try { onCore(); } catch (x) { console.error(x); } onCore = null; }
+    // 手元のほうが新しい(送れていない変更がある/GitHubが古い内容を返した)なら、あとで送る
+    let needPush = !remote || !!lsGet(PENDING, 0) || (local && (local.rev || 0) > (remote.rev || 0)) || (local && (local.trials || []).some(t => !(remote.trials || []).some(x => trialKey(x) === trialKey(t))));
+    let added = 0; try { added = await importLog(); } catch (e) { errs.push("記録の取り込み(Issue #" + state.data.issue + "):" + e.message + (e.status === 403 ? "。トークンの Issues を Read and write にする" : e.status === 404 ? "。Issueが消えていたら、設定で記録の受け口を作り直す" : "")); }
+    if (added) needPush = true;
     for (const rx of state.data.reflexes.filter(x => !x.archived)) {
-      const nl = nextLimit(rx); if (nl !== rx.limit) { rx.limit = nl; (rx.limitLog = rx.limitLog || []).push({ d: new Date().toISOString(), v: nl }); changed = true; }
-      const lf = await readFile(LINE(rx.id)); state.lineSha[rx.id] = lf.sha;
-      if ((lf.text || "").trim() !== String(rx.limit)) state.lineSha[rx.id] = await writeFile(LINE(rx.id), String(rx.limit), lf.sha, "人工反射:当たりの線");
+      const nl = nextLimit(rx); if (nl !== rx.limit) { rx.limit = nl; (rx.limitLog = rx.limitLog || []).push({ d: new Date().toISOString(), v: nl }); needPush = true; }
     }
-    const now = Date.now(); state.cues = [];
-    for (const day of [jstDate(now - 864e5), jstDate(now)]) { try { const cf = await readFile(CUES(day)); if (cf.text) state.cues = state.cues.concat(JSON.parse(cf.text).cues || []); } catch (x) {} }
-    state.cues.sort((a, b) => a.at - b.at);
-    if (changed || !f.sha) await save();
+    if (needPush) { state.data.rev = Math.max(state.data.rev || 0, ((remote && remote.rev) || 0) + 1); lsSet(KEY_LOCAL, state.data); await pushNow(); }
+    await Promise.all(state.data.reflexes.filter(x => !x.archived).map(rx => writeLine(rx).catch(e => { errs.push("当たりの線(" + rx.id + "):" + e.message + (e.status === 403 ? "。トークンの Contents を Read and write にする" : "")); })));
     lsSet(KEY_LOCAL, state.data);
-    if (msg) { msg.textContent = "読み込みました" + (added ? "(新しい記録 " + added + "件)" : ""); msg.className = "note"; }
-  } catch (e) { if (msg) { msg.textContent = e.message; msg.className = "note err"; } }
+    if (msg) { msg.innerHTML = errs.length ? "一部うまくいかなかった:<br>" + errs.map(x => "・" + esc(x)).join("<br>") + "<br>設定の「つながりを確かめる」で、どこが足りないか分かる" : "読み込みました" + (added ? "(新しい記録 " + added + "件)" : ""); msg.className = errs.length ? "note err" : "note"; }
+  } catch (e) { if (msg) { msg.textContent = e.message + "(この端末の記録は残っています)"; msg.className = "note err"; } }
+  if (onCore) { try { onCore(); } catch (x) {} }
   render();
+}
+/* 当たりの線のファイル:違っていれば書く。ぶつかったら読み直してもう一度 */
+async function writeLine(rx){
+  for (let i = 0; i < 4; i++) { const lf = await readFile(LINE(rx.id)); state.lineSha[rx.id] = lf.sha;
+    if ((lf.text || "").trim() === String(rx.limit)) return;
+    try { state.lineSha[rx.id] = await writeFile(LINE(rx.id), String(rx.limit), lf.sha, "人工反射:当たりの線"); return; }
+    catch (e) { if (e.status !== 409 && e.status !== 422) throw e; await wait(700 * (i + 1)); } }
 }
 async function makeIssue(){
   const j = await gh("/issues", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -282,7 +332,8 @@ function trace(rx, big){
 /* ───────── 画面 ───────── */
 function chainText(rx){ return rx.kind === "再現" ? '<i>合図</i> → ' + esc(rx.b.what) + ' <i>→</i> ' + esc(rx.c.what) : (rx.kind === "気づける" ? esc(rx.a || "場面") + ' <i>→</i> ' + esc(rx.c.what) : '<i>合図</i> → ' + esc(rx.c.what)); }
 const unanswered = () => { const D = state.data, done = new Set(D.trials.map(t => t.cue).filter(Boolean).concat(D.skipped || []));
-  return state.cues.filter(c => c.at < Date.now() - 15 * 60000 && !done.has(c.id) && D.reflexes.some(x => x.id === c.r)); };
+  const near = c => D.trials.some(t => !t.cue && t.r === c.r && !t.dojo && Math.abs(Date.parse(t.at) - c.at) < 30 * 60000 && Date.parse(t.at) >= c.at - 60000);
+  return state.cues.filter(c => c.at < Date.now() - 15 * 60000 && !done.has(c.id) && !near(c) && D.reflexes.some(x => x.id === c.r && !x.archived)); };
 function unansweredHtml(){
   const u = unanswered(); if (!u.length) return "";
   const nm = id => (state.data.reflexes.find(x => x.id === id) || {}).name || id;
@@ -383,7 +434,7 @@ function dojoEnd(now){ const d = state.dojo, rx = state.data.reflexes.find(x => 
   const b = d.tB != null ? Math.round(d.tB - d.t0) / 1000 : null, c = now == null ? null : Math.round(now - (d.tB != null ? d.tB : d.t0)) / 1000;
   const t = { cid: "d" + Date.now(), at: new Date().toISOString(), r: rx.id, mode: "稽古", b: rx.kind === "再現" ? b : null, c, miss: now == null ? (d.tB == null && rx.kind === "再現" ? "B" : "C") : null, limit: rx.limit, dojo: true };
   const hit = isHit(t); beep(hit ? "hit" : "miss"); d.count++; d.last = c != null ? fmtS(c) + (hit ? " 当たり" : " 外れ") : "時間切れ";
-  state.data.trials.push(t); dojoArm(); }
+  save(dd => { dd.trials.push(t); }); dojoArm(); }
 
 /* ───────── 合図から開いたとき ─────────
    通知をタップした瞬間 = 反射の速さ(合図からの秒数)を記録する。ただし最短時間より速いタップは無効(記録も解除もしない)。
@@ -394,7 +445,7 @@ function runRecord(t){ if (state.run && state.run.trial) return;
   const nl = nextLimit(rx); if (nl !== rx.limit) { rx.limit = nl; (rx.limitLog = rx.limitLog || []).push({ d: new Date().toISOString(), v: nl }); }
   save(); }
 function runCue(){ const R = state.run; let c = R.id ? state.cues.find(x => x.id === R.id) : null;
-  if (!c && R.src === "esc") { const done = new Set(state.data.trials.map(t => t.cue)); c = state.cues.filter(x => x.at <= Date.now() && !done.has(x.id)).slice(-1)[0] || null; }
+  if (!c && R.src === "esc") { const done = new Set(state.data.trials.map(t => t.cue)); c = state.cues.filter(x => x.at <= Date.now() && !done.has(x.id) && (!R.r || x.r === R.r)).slice(-1)[0] || null; }
   return c; }
 function runCtx(){ const R = state.run, c = runCue(), rx = state.data.reflexes.find(x => x.id === (c ? c.r : R.r));
   const at = c ? c.at : R.at, line = (c && c.line) || (rx && rx.limit) || 30, min = c && c.min != null ? c.min : ((rx && +rx.minTime) || 0);
@@ -423,7 +474,7 @@ function listen(){ const Sp = window.SpeechRecognition || window.webkitSpeechRec
   try { rec.start(); } catch (e) { R.listening = false; R.voiceErr = "聞き取りを始められませんでした"; renderRun(); } }
 function renderRun(){
   const { R, rx, id, line, min, at } = runCtx(), box = $("run"), D = state.data;
-  if (!rx) { callHook({ kaijo: 1 }); box.innerHTML = '<div class="box"><p>この合図の反射が見つかりません(不快信号は止めました)。</p></div>'; return; }
+  if (!rx) { if (!R.hooked) { R.hooked = true; callHook({ kaijo: 1 }); } box.innerHTML = '<div class="box"><p>この合図の反射が見つかりません(不快信号は止めました)。</p></div>'; return; }
   const done = R.trial ? null : D.trials.find(t => t.cue === id);
   const close = '<div class="row" style="justify-content:center"><button type="button" class="btn ghost sm" data-run-close>人工反射に戻る</button></div>';
   if (R.result) { const t = R.result;
@@ -432,7 +483,7 @@ function renderRun(){
     box.innerHTML = '<div class="dojo cue"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="color:' + (hit ? "var(--hit)" : "var(--miss)") + '">' + fmtS(t.c) + "</div>" +
       '<div class="lab">' + (hit ? "当たり" : "外れ") + (R.trial ? "(試し。記録しません)" : " ・ 連続 " + statsOf(rx).streak) + "</div>" +
       (openHref(rx.c.open) ? '<a class="go" href="' + esc(openHref(rx.c.open)) + '">' + esc(rx.c.what) + "へ</a>" : "") + close + "</div>"; return; }
-  if (done) { if (!done.invalid) callHook({ kaijo: 1, cue: id });
+  if (done) { if (!done.invalid && !R.hooked) { R.hooked = true; callHook({ kaijo: 1, cue: id }); }
     box.innerHTML = '<div class="dojo"><div class="lab">' + esc(rx.name) + '</div><div class="big" style="font-size:1.6rem">この合図はもう記録済み</div><div class="lab">' + (done.invalid ? "速すぎ(無効)" : done.c != null ? fmtS(done.c) : "外れ") + "</div>" + close + "</div>"; return; }
   if (R.src !== "esc" && !R.passedMin) {
     if ((R.tap - at) / 1000 < min) { runInvalid(); return; }   // 最短時間より速いタップは無効
@@ -516,10 +567,11 @@ document.addEventListener("click", async e => {
   if (q("[data-dojo-tap]")) { dojoTap(); return; }
   if (q("[data-dojo-stop]")) { const d = state.dojo; clearTimeout(d.timer); clearTimeout(d.out); d.on = false;
     const rxs = state.data.reflexes.filter(x => !x.archived); rxs.forEach(rx => { const nl = nextLimit(rx); if (nl !== rx.limit) { rx.limit = nl; (rx.limitLog = rx.limitLog || []).push({ d: new Date().toISOString(), v: nl }); } });
-    await save(); if (state.conn) for (const rx of rxs) { try { const lf = await readFile(LINE(rx.id)); if ((lf.text || "").trim() !== String(rx.limit)) await writeFile(LINE(rx.id), String(rx.limit), lf.sha, "人工反射:当たりの線"); } catch (x) {} }
+    await save(); if (state.conn) await queue(async () => { for (const rx of rxs) { try { await writeLine(rx); } catch (x) {} } });
     toast(d.count + "回の稽古を記録しました"); renderDojo(); return; }
   if (e.target.id === "connect") { const c = { owner: $("c-owner").value.trim(), repo: $("c-repo").value.trim() || "notion-daily", branch: $("c-branch").value.trim() || "main", token: $("c-token").value.trim() };
     if (!c.owner || !c.token) { $("c-msg").textContent = "ユーザー名とトークンを入れてください"; return; } state.conn = c; lsSet(KEY, c); await sync(); return; }
+  if (e.target.id === "diag") { diagnose(); return; }
   if (e.target.id === "mkissue") { try { await makeIssue(); toast("記録の受け口を作りました"); } catch (x) { toast(x.message); } return; }
   if (e.target.id === "reimport") { await sync(); return; }
   if (e.target.id === "hook-save") { lsSet("jinko-hook", $("hook").value.trim()); $("hook-msg").textContent = "保存しました"; return; }
@@ -536,14 +588,35 @@ document.addEventListener("click", async e => {
       if (msg) msg.textContent = "送りました。スマホに通知が出るまでの時間が、実際の遅れです" + (home ? "(家にいれば出て、外なら消えます)" : "") + "。出ないときは、ntfy で同じトピックを購読しているか確かめてください";
     } catch (x) { if (msg) { msg.textContent = "送れませんでした。ネットにつながっているか確かめてください"; msg.className = "note err"; } }
     return; }
-  if ((b = q("[data-ua-miss]"))) { const id = b.dataset.uaMiss, c = state.cues.find(x => x.id === id);
-    await save(d => { d.trials.push({ cue: id, at: new Date(c.at).toISOString(), r: c.r, mode: "合図", b: null, c: null, miss: "応答なし", limit: (d.reflexes.find(x => x.id === c.r) || {}).limit }); d.trials.sort((x, y) => x.at < y.at ? -1 : 1); }); return; }
-  if ((b = q("[data-ua-skip]"))) { const id = b.dataset.uaSkip; await save(d => { d.skipped = (d.skipped || []).concat([id]).slice(-500); }); return; }
+  if ((b = q("[data-ua-miss]"))) { const id = b.dataset.uaMiss, c = state.cues.find(x => x.id === id); if (!c) { toast("その合図が見つかりません。読み込み直してください"); return; }
+    if (state.data.trials.some(t => t.cue === id)) return;
+    await save(d => { if (d.trials.some(t => t.cue === id)) return; d.trials.push({ cue: id, at: new Date(c.at).toISOString(), r: c.r, mode: "合図", b: null, c: null, miss: "応答なし", limit: (d.reflexes.find(x => x.id === c.r) || {}).limit }); d.trials.sort((x, y) => x.at < y.at ? -1 : 1); }); return; }
+  if ((b = q("[data-ua-skip]"))) { const id = b.dataset.uaSkip; if ((state.data.skipped || []).includes(id)) return; await save(d => { if (!(d.skipped || []).includes(id)) d.skipped = (d.skipped || []).concat([id]).slice(-500); }); return; }
   if (q("[data-run-stop]")) { beep("miss"); runFinish(Date.now()); return; }
   if (q("[data-run-listen]")) { listen(); return; }
   if (q("[data-run-close]")) { state.run = null; showView("rx"); return; }
 });
 
+/* つながりを確かめる:必要な許可を1つずつ試して、足りないものと直し方を出す */
+async function diagnose(){
+  const out = $("diag-out"), rows = [], add = (ok, what, detail) => { rows.push('<div class="tr"><span>' + (ok === null ? "…" : ok ? "✓" : "✗") + "</span><span>" + esc(what) + '</span><span class="note">' + esc(detail || "") + "</span></div>"); out.innerHTML = '<div class="box">' + rows.join("") + "</div>"; };
+  if (!state.conn) { out.innerHTML = '<p class="note err">先にリポジトリとトークンを入れて接続する</p>'; return; }
+  out.innerHTML = '<p class="note">確かめています…</p>';
+  try { await gh(""); add(true, "リポジトリが見える", state.conn.owner + "/" + state.conn.repo); }
+  catch (e) { add(false, "リポジトリが見える", e.message + (e.status === 404 ? "。名前の打ち間違いか、トークンでこのリポジトリを選んでいない" : "")); return; }
+  try { const f = await readFile(DATA); add(true, "記録を読める(Contents 読み)", f.text ? "記録あり" : "まだ記録のファイルがない(最初に送ると作られる)"); }
+  catch (e) { add(false, "記録を読める(Contents 読み)", e.message); }
+  try { const p = "roadmap/apps/jinko/.check", f = await readFile(p); await writeFile(p, new Date().toISOString(), f.sha, "人工反射:つながりの確認"); add(true, "記録を書ける(Contents 書き)", ""); }
+  catch (e) { add(false, "記録を書ける(Contents 書き)", e.message + (e.status === 403 ? "。トークンの Contents を Read and write にする" : "")); }
+  const D = state.data;
+  if (!D.issue) add(false, "記録の受け口(Issue)", "まだない。下の「記録の受け口を作る」を押す");
+  else { try { await gh("/issues/" + D.issue + "/comments?per_page=1"); add(true, "記録の受け口を読める(Issues 読み)", "Issue #" + D.issue); }
+    catch (e) { add(false, "記録の受け口を読める(Issues 読み)", e.message + (e.status === 403 ? "。トークンの Issues を Read and write にする(MacroDroidが記録を書く場所)" : e.status === 404 ? "。Issueが消えている。記録の受け口を作り直す" : "")); } }
+  try { const today = jstDate(Date.now()), f = await readFile(CUES(today)); const n = f.text ? (JSON.parse(f.text).cues || []).length : 0;
+    add(!!f.text, "今日の合図の予定", f.text ? n + "回ぶん" : "今日のファイルがない。合図を出す GitHub Actions(cues.yml)が動いているか、Actions のタブで確かめる"); }
+  catch (e) { add(false, "今日の合図の予定", e.message); }
+  if (D.ntfy) add(true, "合図の通り道(ntfy)", "トピックあり。届くかは「通知を試す」で"); else add(false, "合図の通り道(ntfy)", "まだトピックがない");
+}
 (function boot(){
   const P = new URLSearchParams(location.search);
   if ((P.get("cue") && P.get("at")) || P.get("src") === "esc") { state.run = { id: P.get("cue"), r: P.get("r"), at: +P.get("at") || Date.now(), src: P.get("src") || "", home: P.get("home") === "1", tap: Date.now(), perf: performance.now() }; try { history.replaceState(null, "", location.pathname); } catch (e) {} }
@@ -551,10 +624,13 @@ document.addEventListener("click", async e => {
   $("hook").value = hookUrl();
   if (state.conn) { $("c-owner").value = state.conn.owner; $("c-repo").value = state.conn.repo; $("c-branch").value = state.conn.branch; $("c-token").value = state.conn.token; }
   if (state.run) { state.view = "run"; document.querySelectorAll(".view").forEach(x => { x.hidden = x.id !== "v-run"; }); $("run").innerHTML = '<div class="dojo cue"><div class="big" style="font-size:1.4rem">読み込んでいます</div></div>';
-    (state.conn ? sync() : Promise.resolve()).then(() => { state.ready = true; renderRun(); }); }
+    const go = () => { if (state.ready) return; state.ready = true; renderRun(); };
+    if (state.conn) sync(go); else go(); }
   else { state.ready = true; render(); if (state.conn) sync(); else showView("set"); }
+  window.addEventListener("online", () => { if (state.conn) sync(); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.conn && !state.run && Date.now() - (state.lastSync || 0) > 60000) { state.lastSync = Date.now(); sync(); } });
   if ("serviceWorker" in navigator && !window.__jinkoTest && location.protocol === "https:") navigator.serviceWorker.register("./sw.js").catch(() => {});
-  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf, SCENES };
+  window.__jinko = { state, parseComment, nextLimit, statsOf, sync, importLog, openHref, callHook, STOPS, similar, declOf, SCENES, mergeData, unanswered };
 })();
 </script>
 
